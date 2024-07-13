@@ -1,0 +1,179 @@
+<?xml version="1.0"?>
+<project name="lab3" default="build">
+    <property file="build.properties"/>
+
+    <!-- download libraries -->
+    <path id="libs">
+        <fileset dir="${lib.dir}">
+            <include name="**/*.jar"/>
+        </fileset>
+    </path>
+
+    <!--
+        compile target
+        Making .class files
+    -->
+    <target name="compile" depends="clean">
+        <mkdir dir="${classes.build.dir}"/>
+        <javac srcdir="${classes.src.dir}" destdir="${classes.build.dir}" includeantruntime="false">
+            <classpath refid="libs"/>
+        </javac>
+        <mkdir dir="${test.build.dir}"/>
+        <javac srcdir="${test.src.dir}" destdir="${test.build.dir}" includeantruntime="false">
+            <classpath refid="libs"/>
+            <classpath path="${classes.build.dir}"/>
+        </javac>
+    </target>
+
+    <!--
+        build target
+        Making .war file
+        T0D0: make MANIFEST file
+    -->
+    <target name="build" depends="compile">
+        <war destfile="${artifacts.build.dir}/${ant.project.name}-${version}.war" webxml="${web.dir}/WEB-INF/web.xml">
+            <fileset dir="${web.dir}" includes="**/*.xhtml"/>
+            <lib dir="${lib.dir}">
+                <exclude name="jakarta.faces-api-3.0.0.jar"/>
+                <exclude name="jakarta.servlet-api-5.0.0.jar"/>
+            </lib>
+            <classes dir="${classes.build.dir}"/>
+            <zipfileset prefix="resources" dir="${web.dir}/resources"/>
+            <webinf dir="${web.dir}/WEB-INF"/>
+        </war>
+        <copy file="${artifacts.build.dir}/${ant.project.name}-${version}.war" todir="${wildfly.dir}/standalone/deployments"/>
+    </target>
+
+    <!-- clean target -->
+    <target name="clean">
+        <delete dir="${classes.build.dir}"/>
+        <delete dir="${artifacts.build.dir}"/>
+        <delete dir="${test.report.dir}"/>
+        <delete dir="${test.build.dir}"/>
+        <delete dir="${javadoc.dir}"/>
+        <delete dir="${tmp.dir}"/>
+    </target>
+
+    <!--
+        test target
+        Running JUnit tests
+    -->
+    <target name="test" depends="create-tests, build">
+        <mkdir dir="${test.report.dir}"/>
+        <junit printsummary="withOutAndErr"
+               showoutput="true"
+               haltonerror="true"
+               fork="true">
+            <classpath refid="libs"/>
+            <classpath path="${test.build.dir}"/>
+            <classpath path="${classes.build.dir}"/>
+            <formatter type="xml" extension=".xml"/>
+            <batchtest todir="${test.report.dir}">
+                <fileset dir="${test.build.dir}" includes="**/*.class"/>
+            </batchtest>
+        </junit>
+    </target>
+
+    <target name="create-tests" depends="clean, compile">
+        <mkdir dir="${tmp.dir}"/>
+        <exec command="grep"  output="${test.classlist.tmp}"><arg line="--exclude=${test.generating.annotation}.class -rwl ${classes.build.dir} -e ${test.generating.annotation}"/></exec>
+        <exec command="awk" output="${test.classlist}"><arg line="'{gsub(&quot;${classes.build.dir}&quot;, &quot;&quot;); print}' ${test.classlist.tmp}"/></exec>
+        <exec command="cp"><arg line="${test.classlist} ${test.classlist.tmp}"/></exec>
+        <exec command="awk" output="${test.classlist}"><arg line="'{gsub(&quot;/&quot;, &quot;.&quot;); print}' ${test.classlist.tmp}"/></exec>
+        <exec command="cp"><arg line="${test.classlist} ${test.classlist.tmp}"/></exec>
+        <exec command="awk" output="${test.classlist}"><arg line="'{gsub(&quot;.class&quot;, &quot;&quot;); print}' ${test.classlist.tmp}"/></exec>
+        <exec command="cp"><arg line="${test.classlist} ${test.classlist.tmp}"/></exec>
+        <exec command="awk" output="${test.classlist}"><arg line="'{gsub(&quot;^.&quot;, &quot;&quot;); print}' ${test.classlist.tmp}"/></exec>
+        <java classname="randoop.main.Main" fork="true" dir="${test.generated.dir}">
+            <classpath refid="libs"/>
+            <classpath path="${classes.build.dir}"/>
+            <arg line="gentests --classlist=${test.classlist} --output-limit=${test.generating.limit}"/>
+        </java>
+    </target>
+
+    <!--
+        report target
+        Making test report in XML and commit it on git
+    -->
+    <target name="report" depends="test">
+        <exec executable="git" outputproperty="git.previous.branch">
+            <arg line="branch --show-current"/>
+        </exec>
+        <exec executable="git">
+            <arg line="stash -m reports -u -- ${test.report.dir}/TEST*"/>
+        </exec>
+        <exec executable="git">
+            <arg line="stash -u"/>
+        </exec>
+        <exec executable="git">
+            <arg line="checkout ${git.branch}"/>
+        </exec>
+        <exec executable="git">
+            <arg line="merge ${git.previous.branch}"/>
+        </exec>
+        <exec executable="rm">
+            <arg line="-rf ${test.report.dir}"/>
+        </exec>
+        <exec executable="bash" outputproperty="stash.list">
+            <arg value="-c"/>
+            <arg value="git stash list | grep reports | cut -d: -f1"/>
+        </exec>
+        <echo message="${stash.list}"/>
+        <exec executable="git">
+            <arg line="stash pop ${stash.list}"/>
+        </exec>
+        <exec executable="git">
+            <arg line="add ${test.report.dir}/TEST*"/>
+        </exec>
+        <exec executable="git">
+            <arg line="commit -m '${git.commit.message}'"/>
+        </exec>
+        <exec executable="git">
+            <arg line="checkout ${git.previous.branch}"/>
+        </exec>
+        <exec executable="git">
+            <arg line="stash pop"/>
+        </exec>
+    </target>
+
+    <!--
+        scp target
+        Transferring .war file to the server
+    -->
+    <target name="scp" depends="build">
+        <!-- sshpass -p <password> scp -P <port> <file(s)> <user>@<host>:<path> -->
+        <exec executable="sshpass">
+            <arg line="-p ${scp.password} scp -P ${scp.port} ${artifacts.build.dir}/${ant.project.name}-${version}.war ${scp.login}@${scp.host}:${scp.path}"/>
+        </exec>
+    </target>
+
+    <!--
+        doc target
+        Making documentary
+    -->
+    <target name="doc" depends="build">
+        <mkdir dir="${javadoc.dir}" />
+        <javadoc sourcepath="${classes.src.dir}" destdir="${javadoc.dir}" classpathref="libs"/>
+        <checksum algorithm="MD5" property="md5" file="${artifacts.build.dir}/${ant.project.name}-${version}.war"/>
+        <checksum algorithm="SHA-1" property="sha1" file="${artifacts.build.dir}/${ant.project.name}-${version}.war"/>
+        <war destfile="${artifacts.build.dir}/${ant.project.name}-${version}.war" update="true">
+            <zipfileset dir="${javadoc.dir}" prefix="doc"/>
+            <manifest>
+                <attribute name="MD5-Digest" value="${md5}"/>
+                <attribute name="SHA-1-Digest" value="${sha1}"/>
+            </manifest>
+        </war>
+    </target>
+
+    <!--
+        env target
+        T0D0:
+    -->
+    <target name="env" depends="build">
+        <exec dir="${wildfly.dir}" executable="${wildfly.start}">
+            <env key="JAVA_OPTS" value="${wildfly.java.opts}"/>
+        </exec>
+    </target>
+
+    <target name="all" depends="clean, compile, build, doc, scp, test, report"/>
+</project>
